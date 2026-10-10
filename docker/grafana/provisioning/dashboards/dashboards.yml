@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: order-platform
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      # Only the .json files of this folder are read as dashboards.
+      path: /etc/grafana/provisioning/dashboards

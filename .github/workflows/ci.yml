@@ -47,10 +47,12 @@ jobs:
       - name: Start the stack
         run: docker compose up -d --build --wait --wait-timeout 300
 
-      - name: Check health endpoints
+      - name: Check health endpoints and API docs
         run: |
           for port in 8081 8082 8083; do
             curl -fsS "http://localhost:$port/actuator/health" | tee /dev/stderr | grep -q '"status":"UP"'
+            echo
+            curl -fsSL -o /dev/null -w "swagger-ui on $port: %{http_code}\n" "http://localhost:$port/swagger-ui.html"
           done
 
       - name: Check topics
@@ -62,6 +64,12 @@ jobs:
       - name: Run the scenarios
         run: ./scripts/smoke-test.sh
 
+      - name: Send an invalid message to the dead letter topic
+        run: ./scripts/dead-letter-demo.sh
+
+      - name: Check metrics and the Grafana dashboard
+        run: ./scripts/check-metrics.sh
+
       - name: Show logs
         if: failure()
         run: docker compose logs --no-color
@@ -69,3 +77,4 @@ jobs:
       - name: Stop the stack
         if: always()
         run: docker compose down -v
+

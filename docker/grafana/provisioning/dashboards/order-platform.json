@@ -1,0 +1,219 @@
+{
+  "uid": "order-platform",
+  "title": "Pedidos, estoque e pagamento",
+  "tags": ["order-platform"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Pedidos por estado",
+      "description": "Quantos pedidos chegaram a cada estado desde que o order-service subiu.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (orders_status_changes_total)",
+          "legendFormat": "{{status}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Tempo do pedido até o estado final",
+      "description": "Da criação do pedido até CONFIRMED ou CANCELLED. Média desde que o serviço subiu e o maior tempo dos últimos minutos.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (orders_time_to_final_seconds_sum) / sum by (status) (orders_time_to_final_seconds_count)",
+          "legendFormat": "média {{status}}",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "max by (status) (orders_time_to_final_seconds_max)",
+          "legendFormat": "máximo {{status}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Mudanças de estado por minuto",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (status) (rate(orders_status_changes_total[1m])) * 60",
+          "legendFormat": "{{status}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Eventos pendentes no outbox",
+      "description": "Gravados na tabela outbox e ainda não publicados no Kafka. Cresce quando o broker está fora.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (job) (outbox_pending_events)",
+          "legendFormat": "{{job}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Reservas de estoque",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (stock_reservations_total)",
+          "legendFormat": "{{outcome}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Pagamentos",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (outcome) (payments_total)",
+          "legendFormat": "{{outcome}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Mensagens na fila de erros",
+      "description": "Mensagens que cada serviço desistiu de processar e mandou para o seu tópico .dlt.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (job) (dead_letter_messages_total)",
+          "legendFormat": "{{job}}",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "orientation": "auto",
+        "justifyMode": "auto"
+      }
+    }
+  ]
+}
