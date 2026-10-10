@@ -12,6 +12,16 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+  jackson:
+    mapper:
+      # Keeps the fields in the order they are declared, which is the order shown in the API docs.
+      sort-properties-alphabetically: false
+  task:
+    scheduling:
+      pool:
+        # The outbox poll can wait for seconds on a broker that is down.
+        # A second thread keeps the keep-alive of the order stream on time meanwhile.
+        size: 2
   kafka:
     bootstrap-servers: localhost:29092
     consumer:
@@ -37,6 +47,8 @@ app:
       initial-interval: 200ms
       multiplier: 2.0
       max-interval: 5s
+  stream:
+    keep-alive: 15s
 
 logging:
   pattern:
