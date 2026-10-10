@@ -78,3 +78,32 @@ jobs:
         if: always()
         run: docker compose down -v
 
+  publish:
+    needs: [build, e2e]
+    # Images only go out from main, and only once the repository is public.
+    if: github.ref == 'refs/heads/main' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        service: [order-service, inventory-service, payment-service]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to the GitHub Container Registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push the image
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/$SERVICE"
+          docker build -f "$SERVICE/Dockerfile" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            -t "$image:latest" -t "$image:${GITHUB_SHA::7}" .
+          docker push --all-tags "$image"
