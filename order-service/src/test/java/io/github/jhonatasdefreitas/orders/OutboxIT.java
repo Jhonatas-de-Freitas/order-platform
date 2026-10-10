@@ -12,11 +12,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.testcontainers.kafka.KafkaContainer;
-import tools.jackson.databind.json.JsonMapper;
 
 class OutboxIT extends IntegrationTestBase {
-
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Autowired
     KafkaContainer kafka;
@@ -36,6 +33,8 @@ class OutboxIT extends IntegrationTestBase {
             // so what goes out later comes from a new poll of the table.
             await().pollDelay(Duration.ofSeconds(12)).atMost(Duration.ofSeconds(20))
                     .untilAsserted(() -> assertThat(pendingInOutbox(placed.id())).isEqualTo(1));
+            // The gauge counts the table on every scrape, so it sees the event that is stuck.
+            assertThat(metric("outbox_pending_events")).isGreaterThanOrEqualTo(1);
             assertThat(getOrder(placed.id()).status()).isEqualTo(OrderStatus.PENDING);
         } finally {
             kafka.getDockerClient().unpauseContainerCmd(kafka.getContainerId()).exec();

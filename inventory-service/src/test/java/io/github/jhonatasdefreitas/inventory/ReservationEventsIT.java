@@ -227,24 +227,30 @@ class ReservationEventsIT extends IntegrationTestBase {
 
     @Test
     void countsReservationsByOutcome() {
+        // The counters are shared by every test of this context, so only the difference is checked.
+        String reserved = "stock_reservations_total{outcome=\"reserved\"}";
+        String rejected = "stock_reservations_total{outcome=\"rejected\"}";
+        String released = "stock_reservations_total{outcome=\"released\"}";
+        double reservedBefore = metric(reserved);
+        double rejectedBefore = metric(rejected);
+        double releasedBefore = metric(released);
         ProductResponse headset = createProduct("Headset USB", "279.50", 1);
-        UUID reserved = UUID.randomUUID();
-        UUID rejected = UUID.randomUUID();
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
 
-        otherServices.orderCreated(reserved, item(headset.id(), 1));
-        awaitPublished(reserved, "StockReserved");
-        otherServices.orderCreated(rejected, item(headset.id(), 1));
-        awaitPublished(rejected, "StockRejected");
-        otherServices.orderCancelled(reserved);
-        awaitPublished(reserved, "StockReleased");
+        otherServices.orderCreated(first, item(headset.id(), 1));
+        awaitPublished(first, "StockReserved");
+        otherServices.orderCreated(second, item(headset.id(), 1));
+        awaitPublished(second, "StockRejected");
+        otherServices.orderCancelled(first);
+        awaitPublished(first, "StockReleased");
 
-        eventually().untilAsserted(() -> assertThat(client.get().uri("/actuator/prometheus")
-                .exchange()
-                .expectBody(String.class)
-                .returnResult().getResponseBody())
-                .contains("stock_reservations_total{outcome=\"reserved\"}")
-                .contains("stock_reservations_total{outcome=\"rejected\"}")
-                .contains("stock_reservations_total{outcome=\"released\"}"));
+        // Counted after the commit, so a moment after the event is written.
+        eventually().untilAsserted(() -> {
+            assertThat(metric(reserved)).isGreaterThanOrEqualTo(reservedBefore + 1);
+            assertThat(metric(rejected)).isGreaterThanOrEqualTo(rejectedBefore + 1);
+            assertThat(metric(released)).isGreaterThanOrEqualTo(releasedBefore + 1);
+        });
     }
 
     // An event of a type the service ignores, sent after everything else of this order.

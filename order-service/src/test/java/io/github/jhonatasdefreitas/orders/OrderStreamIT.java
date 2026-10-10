@@ -17,11 +17,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 class OrderStreamIT extends IntegrationTestBase {
-
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @LocalServerPort
     int port;

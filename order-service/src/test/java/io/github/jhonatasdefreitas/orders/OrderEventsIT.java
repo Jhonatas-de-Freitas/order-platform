@@ -7,16 +7,12 @@ import io.github.jhonatasdefreitas.orders.api.OrderResponse.HistoryEntry;
 import io.github.jhonatasdefreitas.orders.domain.CancellationReason;
 import io.github.jhonatasdefreitas.orders.domain.OrderStatus;
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.UUID;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 class OrderEventsIT extends IntegrationTestBase {
-
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Test
     void confirmsAfterStockIsReservedAndPaymentApproved() {
@@ -40,7 +36,7 @@ class OrderEventsIT extends IntegrationTestBase {
         ConsumerRecord<String, String> record = awaitPublished(orderId, "OrderConfirmed");
         // The raw text, to be sure money leaves with two decimal places.
         assertThat(record.value()).contains("\"totalAmount\":699.80").contains("\"unitPrice\":349.90");
-        assertThat(JSON.readTree(record.value()).get("payload")).isEqualTo(JSON.readTree("""
+        assertThat(payloadOf(record)).isEqualTo(JSON.readTree("""
                 {"customerId":"c-1001","customerName":"Ana Souza","customerEmail":"ana@exemplo.com",
                  "totalAmount":699.80,
                  "items":[{"productId":"%s","productName":"Teclado Mecânico","quantity":2,"unitPrice":349.90}]}
@@ -84,7 +80,7 @@ class OrderEventsIT extends IntegrationTestBase {
         assertThat(cancelled.history()).extracting(HistoryEntry::status)
                 .containsExactly(OrderStatus.PENDING, OrderStatus.STOCK_RESERVED, OrderStatus.CANCELLED);
 
-        JsonNode payload = JSON.readTree(awaitPublished(orderId, "OrderCancelled").value()).get("payload");
+        JsonNode payload = payloadOf(awaitPublished(orderId, "OrderCancelled"));
         assertThat(payload.get("reason").asString()).isEqualTo("PAYMENT_REFUSED");
         assertThat(payload.get("detail").asString()).isEqualTo("Pagamento recusado: LIMIT_EXCEEDED");
     }
@@ -116,7 +112,7 @@ class OrderEventsIT extends IntegrationTestBase {
         assertThat(jdbc.sql("select count(*) from processed_events where event_id in (?, ?)")
                 .params(stockEvent, paymentEvent).query(Long.class).single()).isEqualTo(2);
         eventually().untilAsserted(() -> assertThat(otherServices.read(OtherServices.ORDER_EVENTS, orderId))
-                .extracting(record -> JSON.readTree(record.value()).get("type").asString())
+                .extracting(record -> typeOf(record))
                 .containsExactly("OrderCreated", "OrderConfirmed"));
     }
 
@@ -139,7 +135,7 @@ class OrderEventsIT extends IntegrationTestBase {
         assertThat(confirmed.history()).extracting(HistoryEntry::status)
                 .containsExactly(OrderStatus.PENDING, OrderStatus.STOCK_RESERVED, OrderStatus.CONFIRMED);
 
-        JsonNode payload = JSON.readTree(awaitPublished(orderId, "OrderConfirmed").value()).get("payload");
+        JsonNode payload = payloadOf(awaitPublished(orderId, "OrderConfirmed"));
         assertThat(payload.get("totalAmount").decimalValue()).isEqualByComparingTo("699.80");
         assertThat(payload.get("items").get(0).get("productName").asString()).isEqualTo("Teclado Mecânico");
     }
@@ -202,15 +198,27 @@ class OrderEventsIT extends IntegrationTestBase {
         assertThat(otherServices.read(OtherServices.DEAD_LETTERS, orderId)).isEmpty();
     }
 
-    private ConsumerRecord<String, String> awaitPublished(UUID orderId, String type) {
-        eventually().untilAsserted(() -> assertThat(published(orderId, type)).hasSize(1));
-        return published(orderId, type).getFirst();
-    }
+    @Test
+    void countsOrdersByStatusAndTimesTheOnesThatFinish() {
+        // The counters are shared by every test of this context, so only the difference is checked.
+        String confirmed = "orders_status_changes_total{status=\"CONFIRMED\"}";
+        String timedConfirmed = "orders_time_to_final_seconds_count{status=\"CONFIRMED\"}";
+        double confirmedBefore = metric(confirmed);
+        double timedBefore = metric(timedConfirmed);
 
-    private List<ConsumerRecord<String, String>> published(UUID orderId, String type) {
-        return otherServices.read(OtherServices.ORDER_EVENTS, orderId).stream()
-                .filter(record -> JSON.readTree(record.value()).get("type").asString().equals(type))
-                .toList();
+        UUID orderId = placeKeyboardOrder().id();
+        otherServices.stockReserved(orderId);
+        otherServices.paymentApproved(orderId);
+        awaitStatus(orderId, OrderStatus.CONFIRMED);
+
+        // Counted after the commit, so a moment after the status shows up in the API.
+        eventually().untilAsserted(() -> {
+            assertThat(metric(confirmed)).isGreaterThanOrEqualTo(confirmedBefore + 1);
+            assertThat(metric(timedConfirmed)).isGreaterThanOrEqualTo(timedBefore + 1);
+        });
+        assertThat(metric("orders_status_changes_total{status=\"PENDING\"}")).isPositive();
+        assertThat(metric("orders_status_changes_total{status=\"STOCK_RESERVED\"}")).isPositive();
+        assertThat(metric("orders_time_to_final_seconds_sum{status=\"CONFIRMED\"}")).isPositive();
     }
 
     // An event of a type the service ignores, sent to each topic after everything else of this order.

@@ -13,11 +13,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 class OrderApiIT extends IntegrationTestBase {
-
-    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Test
     void acceptsTheOrderAndAnswersBeforeAnythingIsSettled() {

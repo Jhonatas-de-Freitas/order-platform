@@ -141,20 +141,24 @@ class PaymentEventsIT extends IntegrationTestBase {
 
     @Test
     void countsPaymentsByOutcome() {
-        UUID approved = UUID.randomUUID();
-        UUID refused = UUID.randomUUID();
+        // The counters are shared by every test of this context, so only the difference is checked.
+        String approved = "payments_total{outcome=\"approved\"}";
+        String refused = "payments_total{outcome=\"refused\"}";
+        double approvedBefore = metric(approved);
+        double refusedBefore = metric(refused);
+        UUID cheap = UUID.randomUUID();
+        UUID expensive = UUID.randomUUID();
 
-        otherServices.stockReserved(approved, "129.90");
-        otherServices.stockReserved(refused, "9999.00");
-        awaitPublished(approved, "PaymentApproved");
-        awaitPublished(refused, "PaymentRefused");
+        otherServices.stockReserved(cheap, "129.90");
+        otherServices.stockReserved(expensive, "9999.00");
+        awaitPublished(cheap, "PaymentApproved");
+        awaitPublished(expensive, "PaymentRefused");
 
-        eventually().untilAsserted(() -> assertThat(client.get().uri("/actuator/prometheus")
-                .exchange()
-                .expectBody(String.class)
-                .returnResult().getResponseBody())
-                .contains("payments_total{outcome=\"approved\"}")
-                .contains("payments_total{outcome=\"refused\"}"));
+        // Counted after the commit, so a moment after the event is written.
+        eventually().untilAsserted(() -> {
+            assertThat(metric(approved)).isGreaterThanOrEqualTo(approvedBefore + 1);
+            assertThat(metric(refused)).isGreaterThanOrEqualTo(refusedBefore + 1);
+        });
     }
 
     private long paymentCount(UUID orderId) {

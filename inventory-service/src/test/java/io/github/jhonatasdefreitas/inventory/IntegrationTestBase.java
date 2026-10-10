@@ -126,4 +126,20 @@ abstract class IntegrationTestBase {
     protected static JsonNode payloadOf(ConsumerRecord<String, String> record) {
         return JSON.readTree(record.value()).get("payload");
     }
+
+    /**
+     * Sum of the samples of a series in /actuator/prometheus, as Prometheus names it:
+     * {@code dead_letter_messages_total}, or with labels, {@code stock_reservations_total{outcome="reserved"}}.
+     */
+    protected double metric(String series) {
+        String body = client.get().uri("/actuator/prometheus")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .returnResult().getResponseBody();
+        return body.lines()
+                .filter(line -> line.startsWith(series + " ") || line.startsWith(series + "{"))
+                .mapToDouble(line -> Double.parseDouble(line.substring(line.lastIndexOf(' ') + 1)))
+                .sum();
+    }
 }

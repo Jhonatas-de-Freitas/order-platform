@@ -11,7 +11,6 @@ import io.github.jhonatasdefreitas.orders.domain.OrderStatus;
 import io.github.jhonatasdefreitas.orders.messaging.InvalidEventException;
 import io.github.jhonatasdefreitas.orders.persistence.ProcessedEvents;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.UUID;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.junit.jupiter.api.Test;
@@ -99,7 +98,7 @@ class DeadLetterIT extends IntegrationTestBase {
         UUID eventId = UUID.randomUUID();
         doThrow(new TransientDataAccessResourceException("database went away"))
                 .when(processedEvents).markProcessed(eventId);
-        double deadLettersBefore = deadLetterCount();
+        double deadLettersBefore = metric("dead_letter_messages_total");
 
         otherServices.publish(OtherServices.INVENTORY_EVENTS, eventId, "StockRejected", orderId, """
                 {"reason":"INSUFFICIENT_STOCK","unavailableItems":[]}
@@ -112,7 +111,7 @@ class DeadLetterIT extends IntegrationTestBase {
         verify(processedEvents, times(4)).markProcessed(eventId);
         // The partition did not stay stuck behind it.
         awaitStatus(orderId, OrderStatus.STOCK_RESERVED);
-        assertThat(deadLetterCount()).isEqualTo(deadLettersBefore + 1);
+        assertThat(metric("dead_letter_messages_total")).isEqualTo(deadLettersBefore + 1);
     }
 
     private ConsumerRecord<String, String> awaitDeadLetter(UUID key) {
@@ -123,16 +122,5 @@ class DeadLetterIT extends IntegrationTestBase {
 
     private static String header(ConsumerRecord<String, String> record, String name) {
         return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
-    }
-
-    private double deadLetterCount() {
-        String metrics = client.get().uri("/actuator/prometheus")
-                .exchange()
-                .expectBody(String.class)
-                .returnResult().getResponseBody();
-        return List.of(metrics.split("\n")).stream()
-                .filter(line -> line.startsWith("dead_letter_messages_total"))
-                .mapToDouble(line -> Double.parseDouble(line.substring(line.lastIndexOf(' ') + 1)))
-                .sum();
     }
 }

@@ -40,6 +40,8 @@ class OutboxIT extends IntegrationTestBase {
             // so what goes out later comes from a new poll of the table.
             await().pollDelay(Duration.ofSeconds(12)).atMost(Duration.ofSeconds(20))
                     .untilAsserted(() -> assertThat(pendingInOutbox(orderId)).isEqualTo(1));
+            // The gauge counts the table on every scrape, so it sees the event that is stuck.
+            assertThat(metric("outbox_pending_events")).isGreaterThanOrEqualTo(1);
             assertThat(getPayment(orderId).status()).isEqualTo(PaymentStatus.APPROVED);
         } finally {
             kafka.getDockerClient().unpauseContainerCmd(kafka.getContainerId()).exec();
