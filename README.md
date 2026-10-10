@@ -1,19 +1,228 @@
 # order-platform
 
-Três serviços em Java (pedidos, estoque e pagamento) que processam um pedido trocando eventos pelo Kafka, cada um com o seu banco PostgreSQL.
+[![CI](https://github.com/Jhonatas-de-Freitas/order-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/Jhonatas-de-Freitas/order-platform/actions/workflows/ci.yml)
+![Java 21](https://img.shields.io/badge/Java-21-blue)
 
-Ainda estou construindo. O que já existe:
+Três serviços em Java que processam um pedido trocando eventos pelo Kafka: o `order-service` recebe o pedido, o `inventory-service` reserva o estoque e o `payment-service` cobra (de mentira). Cada um tem o seu banco PostgreSQL e nenhum chama o outro por HTTP. Não existe um serviço chefe: cada um reage ao evento do outro.
 
-- A base: os três serviços sobem com `docker compose up -d --build --wait` e respondem em `/actuator/health`.
-- O `order-service` completo: recebe o pedido (`POST /orders` em `http://localhost:8081`), grava o evento no outbox na mesma transação, publica no Kafka e acompanha o pedido até `CONFIRMED` ou `CANCELLED` conforme os eventos de estoque e de pagamento chegam. A documentação da API fica em `http://localhost:8081/swagger-ui.html`.
-- O `inventory-service` completo: catálogo com seis produtos de exemplo (`GET /products` em `http://localhost:8082`), reserva de estoque tudo ou nada a cada `OrderCreated`, com o preço do catálogo, e devolução do saldo quando o pedido é cancelado (`GET /reservations/{orderId}` mostra a reserva). Dois pedidos disputando o mesmo produto esperam um pelo outro numa trava de linha no banco, então o saldo nunca fica negativo. A documentação da API fica em `http://localhost:8082/swagger-ui.html`.
+O que eu quis mostrar são os caminhos de falha: falta de estoque, pagamento recusado, serviço fora do ar, o mesmo evento chegando duas vezes ou fora de ordem, e uma mensagem que ninguém consegue ler.
 
-- O `payment-service` completo: a cada `StockReserved` cobra o total do pedido (simulado) e publica `PaymentApproved` ou `PaymentRefused`. Acima de 5000.00 o pagamento é recusado com `LIMIT_EXCEEDED`; o limite muda pela variável `PAYMENT_APPROVAL_LIMIT`. Cada pedido tem no máximo um pagamento, mesmo que o evento chegue repetido. `GET /payments/{orderId}` em `http://localhost:8083` mostra o pagamento, e a documentação da API fica em `http://localhost:8083/swagger-ui.html`.
+Java 21, Spring Boot 4.1, Spring Kafka, Spring Data JPA, Flyway, PostgreSQL 17 e Kafka 4.2 (KRaft). Testes com JUnit, Testcontainers e Awaitility. Métricas com Micrometer, Prometheus e Grafana.
 
-Para ver os cenários rodando contra o sistema de verdade, com o compose no ar:
+## Como funciona
 
-```bash
-./scripts/smoke-test.sh
+```mermaid
+sequenceDiagram
+    actor C as Cliente
+    participant O as order-service
+    participant I as inventory-service
+    participant P as payment-service
+    C->>O: POST /orders
+    O-->>C: 202, pedido PENDING
+    O->>I: OrderCreated
+    alt tem saldo de todos os itens
+        I->>O: StockReserved (preços e total)
+        I->>P: StockReserved
+        alt total até o limite
+            P->>O: PaymentApproved
+            Note over O: CONFIRMED, publica OrderConfirmed
+        else total acima do limite
+            P->>O: PaymentRefused
+            Note over O: CANCELLED (PAYMENT_REFUSED)
+            O->>I: OrderCancelled
+            Note over I: devolve o saldo, publica StockReleased
+        end
+    else falta algum item
+        I->>O: StockRejected
+        Note over O: CANCELLED (OUT_OF_STOCK), publica OrderCancelled
+    end
 ```
 
-Ele precisa de `curl` e `jq` e confere o caminho feliz, a falta de estoque, o pagamento recusado (com o saldo voltando), o pedido tudo ou nada e o `payment-service` fora do ar (o script para o container, vê o pedido esperando em `STOCK_RESERVED` e sobe de novo até o pedido chegar a `CONFIRMED`). Para no primeiro cenário que falhar, dizendo o que esperava e o que recebeu. É o mesmo script que roda no CI.
+Toda seta entre serviços passa pelo Kafka. Os eventos têm o mesmo envelope (`eventId`, `type`, `orderId`, `occurredAt`, `payload`) e a chave da mensagem é o `orderId`, então os eventos de um pedido ficam na mesma partição de cada tópico.
+
+| Evento | Tópico | Quem reage |
+|---|---|---|
+| `OrderCreated` | `orders.events` | inventory reserva tudo ou nada |
+| `StockReserved` | `inventory.events` | payment cobra o total; order guarda nomes, preços e total |
+| `StockRejected` | `inventory.events` | order cancela com `OUT_OF_STOCK` |
+| `PaymentApproved` | `payments.events` | order confirma |
+| `PaymentRefused` | `payments.events` | order cancela com `PAYMENT_REFUSED` |
+| `OrderCancelled` | `orders.events` | inventory devolve o saldo, se tinha reservado |
+| `OrderConfirmed`, `StockReleased` | | ninguém aqui (servem para notificação e métricas) |
+
+Estados do pedido: `PENDING` → `STOCK_RESERVED` → `CONFIRMED`, ou `CANCELLED`. `CONFIRMED` e `CANCELLED` são finais: o que chegar depois é ignorado.
+
+Cada serviço tem os pacotes `api` (REST e erros em `application/problem+json`), `domain` (regras, sem saber de Kafka), `messaging` (envelope, outbox, consumidor) e `persistence`. Os serviços não compartilham código: cada um tem a sua cópia do envelope e do outbox, para poderem mudar sem depender um do outro.
+
+## Como rodar
+
+Precisa de Docker.
+
+```bash
+docker compose up -d --build --wait
+```
+
+| O quê | Onde |
+|---|---|
+| order-service | http://localhost:8081/swagger-ui.html |
+| inventory-service | http://localhost:8082/swagger-ui.html |
+| payment-service | http://localhost:8083/swagger-ui.html |
+| Prometheus | http://localhost:9090 |
+| Grafana | http://localhost:3000 (abre direto no painel, sem login) |
+
+O painel do Grafana mostra pedidos por estado, tempo do pedido até o estado final, reservas, pagamentos, mensagens na fila de erros e eventos pendentes no outbox. Os contadores começam do zero quando o serviço reinicia.
+
+Testes de unidade e de integração (os de integração sobem PostgreSQL e Kafka com Testcontainers, então também precisam de Docker):
+
+```bash
+./mvnw verify
+```
+
+`docker compose down` apaga tudo, bancos inclusive.
+
+## Como testar os cenários
+
+As respostas abaixo foram copiadas do job `e2e` do CI, com a stack recém-criada. Os ids mudam a cada pedido. Os `jq` só cortam campos para caber aqui.
+
+Caminho feliz, dois teclados:
+
+```bash
+curl -i -X POST localhost:8081/orders -H 'Content-Type: application/json' -d '{
+  "customerId":"c-1001","customerName":"Ana Souza","customerEmail":"ana@exemplo.com",
+  "items":[{"productId":"11111111-1111-1111-1111-111111111111","quantity":2}]}'
+```
+```
+HTTP/1.1 202
+Location: /orders/180708fa-e599-4655-a2a3-726f464a5c60
+Content-Type: application/json
+
+{"id":"180708fa-e599-4655-a2a3-726f464a5c60","customerId":"c-1001","customerName":"Ana Souza","customerEmail":"ana@exemplo.com","status":"PENDING","totalAmount":null,"cancellationReason":null,"cancellationDetail":null,"items":[{"productId":"11111111-1111-1111-1111-111111111111","productName":null,"quantity":2,"unitPrice":null}],"history":[{"status":"PENDING","occurredAt":"2026-10-10T20:39:46.058Z","detail":"Pedido recebido"}],"createdAt":"2026-10-10T20:39:46.058Z","updatedAt":"2026-10-10T20:39:46.058Z"}
+```
+
+Dois segundos depois o pedido está confirmado, pago, e o saldo do teclado caiu de 50 para 48:
+
+```bash
+ORDER=180708fa-e599-4655-a2a3-726f464a5c60
+curl -s localhost:8081/orders/$ORDER | jq -c '{status, totalAmount, history: [.history[] | .status + ": " + .detail]}'
+curl -s localhost:8083/payments/$ORDER | jq -c '{status, amount}'
+curl -s localhost:8082/products/11111111-1111-1111-1111-111111111111 | jq -c '{name, availableQuantity}'
+```
+```
+{"status":"CONFIRMED","totalAmount":699.80,"history":["PENDING: Pedido recebido","STOCK_RESERVED: Estoque reservado","CONFIRMED: Pagamento aprovado"]}
+{"status":"APPROVED","amount":699.80}
+{"name":"Teclado Mecânico","availableQuantity":48}
+```
+
+`curl -N localhost:8081/orders/stream`, aberto antes do pedido, recebe um evento por mudança (este é o primeiro; vieram mais dois, com `STOCK_RESERVED` e `CONFIRMED`) e um comentário de keep-alive a cada 15 s:
+
+```
+event:order-updated
+data:{"id":"180708fa-e599-4655-a2a3-726f464a5c60","customerId":"c-1001","customerName":"Ana Souza","status":"PENDING","totalAmount":null,"itemCount":1,"createdAt":"2026-10-10T20:39:46.058Z","updatedAt":"2026-10-10T20:39:46.058Z"}
+```
+
+Para os próximos, uma função que faz o mesmo `POST` com os itens dados e devolve o id:
+
+```bash
+order() { curl -s -X POST localhost:8081/orders -H 'Content-Type: application/json' -d '{"customerId":"c-1001",
+  "customerName":"Ana Souza","customerEmail":"ana@exemplo.com","items":['"$1"']}' | jq -r .id; }
+```
+
+Sem estoque, um Headset (saldo 0): cancelado, e nenhum pagamento foi criado.
+
+```bash
+ORDER=$(order '{"productId":"44444444-4444-4444-4444-444444444444","quantity":1}')
+curl -s localhost:8081/orders/$ORDER | jq -c '{status, cancellationReason, cancellationDetail}'
+curl -s localhost:8083/payments/$ORDER
+```
+```
+{"status":"CANCELLED","cancellationReason":"OUT_OF_STOCK","cancellationDetail":"44444444-4444-4444-4444-444444444444: pedido 1, disponível 0"}
+{"type":"about:blank","title":"Not Found","status":404,"detail":"Payment for order 7af69585-89c4-4f60-9f04-3dff3c7bf675 not found","instance":"/payments/7af69585-89c4-4f60-9f04-3dff3c7bf675"}
+```
+
+Pagamento recusado, um Notebook (7499.00, acima do limite de 5000.00): o estoque chegou a reservar, o pagamento foi recusado, o pedido cancelou e a reserva foi devolvida.
+
+```bash
+ORDER=$(order '{"productId":"55555555-5555-5555-5555-555555555555","quantity":1}')
+curl -s localhost:8081/orders/$ORDER | jq -c '{status, totalAmount, cancellationReason, cancellationDetail}'
+curl -s localhost:8083/payments/$ORDER | jq -c '{status, amount, reason}'
+curl -s localhost:8082/reservations/$ORDER | jq -c '{status, releasedAt}'
+curl -s localhost:8082/products/55555555-5555-5555-5555-555555555555 | jq -c '{name, availableQuantity}'
+```
+```
+{"status":"CANCELLED","totalAmount":7499.00,"cancellationReason":"PAYMENT_REFUSED","cancellationDetail":"Pagamento recusado: LIMIT_EXCEEDED"}
+{"status":"REFUSED","amount":7499.00,"reason":"LIMIT_EXCEEDED"}
+{"status":"RELEASED","releasedAt":"2026-10-10T20:39:59.613Z"}
+{"name":"Notebook Pro 16","availableQuantity":10}
+```
+
+Tudo ou nada, um Mouse e um Headset no mesmo pedido: o Headset não tem saldo, então nem o Mouse foi reservado.
+
+```bash
+ORDER=$(order '{"productId":"22222222-2222-2222-2222-222222222222","quantity":1},
+  {"productId":"44444444-4444-4444-4444-444444444444","quantity":1}')
+curl -s localhost:8081/orders/$ORDER | jq -c '{status, cancellationReason}'
+curl -s localhost:8082/reservations/$ORDER
+curl -s localhost:8082/products/22222222-2222-2222-2222-222222222222 | jq -c '{name, availableQuantity}'
+```
+```
+{"status":"CANCELLED","cancellationReason":"OUT_OF_STOCK"}
+{"type":"about:blank","title":"Not Found","status":404,"detail":"Reservation for order 5de01d6e-4c6e-45cf-ae9b-231f29fb6ca1 not found","instance":"/reservations/5de01d6e-4c6e-45cf-ae9b-231f29fb6ca1"}
+{"name":"Mouse Sem Fio","availableQuantity":80}
+```
+
+Pedido inválido:
+
+```bash
+curl -i -X POST localhost:8081/orders -H 'Content-Type: application/json' -d '{"customerId":"","customerName":"Ana Souza",
+  "customerEmail":"ana","items":[{"productId":"11111111-1111-1111-1111-111111111111","quantity":0}]}'
+```
+```
+HTTP/1.1 400
+Content-Type: application/problem+json
+
+{"type":"about:blank","title":"Bad Request","status":400,"detail":"The request has invalid fields","instance":"/orders","errors":[{"field":"customerId","message":"must not be blank"},{"field":"customerEmail","message":"must be a well-formed email address"},{"field":"items[0].quantity","message":"must be greater than or equal to 1"}]}
+```
+
+Serviço fora do ar: com `docker compose stop payment-service`, um pedido de Mouse para em `STOCK_RESERVED` (o `StockReserved` fica esperando no tópico). Depois de `docker compose start payment-service` ele chega a `CONFIRMED`; no CI foram 22 segundos entre o `start` e a confirmação.
+
+Mensagem inválida: `./scripts/dead-letter-demo.sh` publica um texto que não é JSON em `orders.events`, mostra onde ele foi parar e confere que o pedido seguinte passa. Saída no CI:
+
+```
+== Publishing to orders.events, key demo-1791665544: "isto nao e um evento"
+== Waiting for it in inventory-service.dlt
+  partition 0, offset 0
+  key and value, as they were published:
+    demo-1791665544 | isto nao e um evento
+  why it is there (headers added by the service):
+    kafka_dlt-exception-cause-fqcn:io.github.jhonatasdefreitas.inventory.messaging.InvalidEventException
+    kafka_dlt-exception-message:Not a valid event: Unrecognized token 'isto': was expecting (JSON String, Number, Array, Object or token 'null', 'true' or 'false')
+    kafka_dlt-original-topic:orders.events
+== Counter of the inventory-service
+  dead_letter_messages_total 1.0
+== The next order still goes through
+  order 5903850d-d656-459e-98f2-3b733eca7a9f is CONFIRMED
+```
+
+Todos esses cenários, com as conferências, estão em `./scripts/smoke-test.sh` (precisa de `curl` e `jq`), e `./scripts/check-metrics.sh` confere que o Prometheus raspa os três serviços e que cada consulta do painel do Grafana tem dados. O CI roda os três scripts a cada push.
+
+## Decisões que tomei e por quê
+
+**Outbox.** O serviço grava a mudança e o evento na mesma transação, numa tabela `outbox`. Um publicador separado lê a tabela a cada 500 ms com `FOR UPDATE SKIP LOCKED` (duas instâncias não pegam a mesma linha), envia o lote, espera o broker confirmar e só então marca como publicado. Com o Kafka fora, o pedido continua sendo aceito e o evento sai quando o broker volta: tem um teste que pausa o container do Kafka no meio. O preço é a entrega "pelo menos uma vez": o mesmo evento pode sair duas vezes, sempre com o mesmo `eventId`.
+
+**Idempotência.** Por isso cada consumidor grava o `eventId` em `processed_events` (`insert ... on conflict do nothing`) na mesma transação do efeito. Se já existia, descarta. Se o efeito falha, a marca é desfeita junto e a nova tentativa começa limpa. E ainda há uma reserva e um pagamento por pedido (`order_id` único), para o caso de um evento repetido com outro id.
+
+**Coreografia em vez de orquestração.** Nenhum serviço conhece o fluxo inteiro, cada um reage ao evento do outro. Com três passos fica simples, e um serviço fora do ar só atrasa o pedido, não perde nada. O custo é que o fluxo não está escrito em um lugar só: por isso o diagrama e o smoke test. Com mais passos ou regras de prazo, eu passaria a um orquestrador.
+
+**Evento fora de ordem.** `StockReserved` e `PaymentApproved` vêm de tópicos diferentes, então o pagamento pode chegar primeiro no `order-service`. Não usei retry para isso: travaria a partição e dependeria de tempo, podendo terminar na fila de erros. `PaymentApproved` com o pedido ainda em `PENDING` só liga uma marca; quando o `StockReserved` chega, o pedido passa por `STOCK_RESERVED` e vai para `CONFIRMED` na mesma transação. `PaymentRefused` em `PENDING` cancela na hora, e o `OrderCancelled` faz o estoque devolver a reserva. O pedido é lido com trava de linha, porque os dois tópicos chegam ao mesmo tempo.
+
+**Tudo ou nada.** O `inventory-service` olha o pedido inteiro antes de tirar qualquer saldo. Os produtos são lidos com `select ... for update`, sempre em ordem de id: dois pedidos no mesmo produto esperam um pelo outro, e a ordem fixa evita deadlock entre pedidos com os mesmos produtos em ordem diferente. Um `check (available_quantity >= 0)` no banco é a rede de segurança. O consumidor do estoque usa 3 threads de propósito, para a trava trabalhar também pelo caminho do Kafka, e um teste dispara pedidos simultâneos pelo último item.
+
+**Retry e fila de erros.** Uma falha ao consumir é tentada 4 vezes (200, 400 e 800 ms entre elas) e depois vai para `<serviço>.dlt`, com o motivo nos headers e a mensagem original intacta. Mensagem que não é JSON, ou que não é um evento válido, vai direto, sem retry, e a partição continua andando.
+
+## O que eu faria a seguir
+
+- Prazo para o pedido: se o `payment-service` nunca responder, o pedido fica em `STOCK_RESERVED` para sempre. Um job que cancela pedidos parados há alguns minutos resolve, e o estoque volta pelo mesmo `OrderCancelled`.
+- Um jeito de reprocessar a fila de erros depois de corrigir a causa.
+- Limpar as linhas antigas de `outbox` e `processed_events`, que hoje só crescem.
+- Tracing com OpenTelemetry, levando o trace no header da mensagem, para seguir um pedido pelos três serviços.
+- Readiness olhando o Kafka (hoje só o banco) e esquema dos eventos versionado, com teste de contrato entre os serviços.
