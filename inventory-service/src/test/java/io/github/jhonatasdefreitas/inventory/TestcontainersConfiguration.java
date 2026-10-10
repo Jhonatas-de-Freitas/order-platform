@@ -1,8 +1,11 @@
 package io.github.jhonatasdefreitas.inventory;
 
+import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.springframework.kafka.config.TopicBuilder;
+import org.springframework.kafka.core.KafkaAdmin.NewTopics;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
@@ -19,5 +22,19 @@ class TestcontainersConfiguration {
     @ServiceConnection
     KafkaContainer kafka() {
         return new KafkaContainer("apache/kafka:4.2.2");
+    }
+
+    // In the compose file the topics come from kafka-init. Here they are declared with the same three
+    // partitions, so the tests see the real thing: events of different orders on different partitions.
+    @Bean
+    NewTopics topics() {
+        return new NewTopics(
+                topic("orders.events"),
+                topic("inventory.events"),
+                topic("inventory-service.dlt"));
+    }
+
+    private static NewTopic topic(String name) {
+        return TopicBuilder.name(name).partitions(3).replicas(1).build();
     }
 }
