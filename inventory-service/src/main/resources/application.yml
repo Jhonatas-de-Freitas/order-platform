@@ -12,6 +12,10 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+  jackson:
+    mapper:
+      # Keeps the fields in the order they are declared, which is the order shown in the API docs.
+      sort-properties-alphabetically: false
   kafka:
     bootstrap-servers: localhost:29092
     consumer:
