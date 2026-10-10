@@ -14,6 +14,9 @@ spring:
       ddl-auto: validate
   kafka:
     bootstrap-servers: localhost:29092
+    consumer:
+      group-id: order-service
+      auto-offset-reset: earliest
     producer:
       acks: all
       properties:
@@ -27,6 +30,13 @@ app:
   outbox:
     poll-interval: 500ms
     batch-size: 100
+  consumer:
+    retry:
+      # Attempts in total, counting the first one. The wait grows from one attempt to the next.
+      max-attempts: 4
+      initial-interval: 200ms
+      multiplier: 2.0
+      max-interval: 5s
 
 logging:
   pattern:
