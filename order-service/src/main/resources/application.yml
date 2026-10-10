@@ -14,6 +14,19 @@ spring:
       ddl-auto: validate
   kafka:
     bootstrap-servers: localhost:29092
+    producer:
+      acks: all
+      properties:
+        # Short limits so a broker that is down fails the outbox batch quickly instead of holding
+        # its database transaction for the one minute the client waits by default.
+        max.block.ms: 5000
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+
+app:
+  outbox:
+    poll-interval: 500ms
+    batch-size: 100
 
 logging:
   pattern:
