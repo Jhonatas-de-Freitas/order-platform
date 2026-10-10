@@ -15,6 +15,10 @@ spring:
   kafka:
     bootstrap-servers: localhost:29092
 
+logging:
+  pattern:
+    correlation: "[%X{orderId:-}] "
+
 management:
   endpoints:
     web:
