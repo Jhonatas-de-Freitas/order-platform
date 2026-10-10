@@ -15,6 +15,15 @@ spring:
   kafka:
     bootstrap-servers: localhost:29092
 
+app:
+  payment:
+    # The simulated charge refuses any amount above this.
+    approval-limit: ${PAYMENT_APPROVAL_LIMIT:5000.00}
+
+logging:
+  pattern:
+    correlation: "[%X{orderId:-}] "
+
 management:
   endpoints:
     web:

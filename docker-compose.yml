@@ -89,6 +89,8 @@ services:
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payments_db
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # Orders above this amount have the payment refused.
+      PAYMENT_APPROVAL_LIMIT: ${PAYMENT_APPROVAL_LIMIT:-5000.00}
     ports:
       - "8083:8083"
 
