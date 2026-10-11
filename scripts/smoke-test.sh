@@ -136,6 +136,23 @@ expect_http "no reservation was made" "$INVENTORY_URL/reservations/$order" 404
 expect_http "no payment was created" "$PAYMENT_URL/payments/$order" 404
 expect_stock "mouse stock is still $mice" $MOUSE "$mice"
 
+scenario "Last unit: two orders at the same time, one is confirmed and the other cancelled"
+cable=$(curl -fsS -X POST "$INVENTORY_URL/products" -H 'Content-Type: application/json' \
+  -d '{"name":"Cabo HDMI 2m","description":"Ultima unidade","price":39.90,"availableQuantity":1}' \
+  | jq -er '.id') || fail "POST $INVENTORY_URL/products was not accepted"
+ok "product $cable created with 1 in stock"
+# Both POSTs leave together; each prints the id of its order.
+orders=($(place_order "$(item "$cable" 1)" & place_order "$(item "$cable" 1)" & wait))
+[ "${#orders[@]}" -eq 2 ] || fail "expected two orders, got: ${orders[*]}"
+for order in "${orders[@]}"; do
+  wait_for "order $order is finished" "$ORDER_URL/orders/$order" '.status == "CONFIRMED" or .status == "CANCELLED"'
+done
+body=$(for order in "${orders[@]}"; do get "$ORDER_URL/orders/$order"; done \
+  | jq -sc 'map({status, cancellationReason}) | sort_by(.status)')
+expect "one is CANCELLED with OUT_OF_STOCK and the other CONFIRMED" \
+  '. == [{"status": "CANCELLED", "cancellationReason": "OUT_OF_STOCK"}, {"status": "CONFIRMED", "cancellationReason": null}]'
+expect_stock "stock of the cable is 0" "$cable" 0
+
 scenario "Payment service down: the order waits and is confirmed when the service is back"
 # Whatever happens next, the stack is not left without the payment-service.
 trap '$COMPOSE start payment-service > /dev/null 2>&1 || true' EXIT
