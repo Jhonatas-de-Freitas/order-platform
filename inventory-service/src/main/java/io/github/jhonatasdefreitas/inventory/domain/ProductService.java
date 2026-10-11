@@ -38,10 +38,11 @@ public class ProductService {
         return product;
     }
 
-    // No row lock needed: this replaces the balance instead of adding to it, so whatever order it ends up
-    // in relative to a reservation that is running at the same time, the result is a valid one.
+    // Same row lock as a reservation. Without it, this could read the balance from before a reservation
+    // that has not committed yet, see no change to write, and answer a balance that is not the one saved.
     public Product setStock(UUID productId, int availableQuantity) {
-        Product product = get(productId);
+        Product product = products.findByIdForUpdate(productId)
+                .orElseThrow(() -> new ProductNotFoundException(productId));
         product.setAvailableQuantity(availableQuantity);
         log.info("Stock of product {} set to {}", productId, availableQuantity);
         return product;

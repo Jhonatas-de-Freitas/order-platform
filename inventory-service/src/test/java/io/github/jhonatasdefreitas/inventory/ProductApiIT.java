@@ -8,12 +8,20 @@ import io.github.jhonatasdefreitas.inventory.api.ProductResponse;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
+import org.springframework.transaction.support.TransactionTemplate;
 
 class ProductApiIT extends IntegrationTestBase {
+
+    @Autowired
+    TransactionTemplate transactions;
 
     @Test
     void startsWithTheSixProductsOfTheDemo() {
@@ -100,6 +108,41 @@ class ProductApiIT extends IntegrationTestBase {
     }
 
     @Test
+    void settingTheStockWaitsForAReservationThatHoldsTheProduct() throws Exception {
+        ProductResponse product = createProduct("Cabo HDMI", "39.90", 50);
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+
+        // Stands in for a reservation in the middle of its transaction: the row is locked and 48 is not committed.
+        CompletableFuture<Void> reservation = CompletableFuture.runAsync(() -> transactions.executeWithoutResult(tx -> {
+            jdbc.sql("update products set available_quantity = available_quantity - 2 where id = ?")
+                    .param(product.id())
+                    .update();
+            locked.countDown();
+            awaitQuietly(commit);
+        }));
+        assertThat(locked.await(10, TimeUnit.SECONDS)).isTrue();
+
+        CompletableFuture<Integer> setStock = CompletableFuture.supplyAsync(() -> client.put()
+                .uri("/products/{id}/stock", product.id())
+                .contentType(MediaType.APPLICATION_JSON)
+                .body("""
+                        {"availableQuantity":50}
+                        """)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(ProductResponse.class)
+                .returnResult().getResponseBody().availableQuantity());
+        // Either it answered already, without waiting for the lock, or it is waiting for it.
+        eventually().until(() -> setStock.isDone() || sessionsWaitingForALock() > 0);
+        commit.countDown();
+        reservation.get(10, TimeUnit.SECONDS);
+
+        assertThat(setStock.get(10, TimeUnit.SECONDS)).isEqualTo(50);
+        assertThat(stockOf(product.id())).isEqualTo(50);
+    }
+
+    @Test
     void invalidProductIsRefusedAsAProblemWithTheFields() {
         client.post().uri("/products")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -161,6 +204,20 @@ class ProductApiIT extends IntegrationTestBase {
 
     private static UUID seeded(char digit) {
         return UUID.fromString("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx".replace('x', digit));
+    }
+
+    private long sessionsWaitingForALock() {
+        return jdbc.sql("select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'")
+                .query(Long.class)
+                .single();
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private List<ProductResponse> listProducts() {
