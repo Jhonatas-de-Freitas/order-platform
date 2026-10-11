@@ -2,6 +2,7 @@ package io.github.jhonatasdefreitas.orders;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.io.UncheckedIOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -31,7 +32,15 @@ class OrderStreamIT extends IntegrationTestBase {
     void openStream() throws Exception {
         URI uri = URI.create("http://localhost:" + port + "/orders/stream");
         stream = http.send(HttpRequest.newBuilder(uri).build(), BodyHandlers.ofLines());
-        Thread.ofVirtual().start(() -> stream.body().forEach(lines::add));
+        Thread.ofVirtual().start(this::readLines);
+    }
+
+    private void readLines() {
+        try {
+            stream.body().forEach(lines::add);
+        } catch (UncheckedIOException e) {
+            // The test closed the stream: the reading ends here.
+        }
     }
 
     @AfterEach
