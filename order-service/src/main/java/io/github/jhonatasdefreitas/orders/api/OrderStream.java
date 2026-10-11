@@ -1,12 +1,12 @@
 package io.github.jhonatasdefreitas.orders.api;
 
 import io.github.jhonatasdefreitas.orders.domain.OrderStatusChanged;
-import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.function.Supplier;
 import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.event.EventListener;
@@ -20,18 +20,22 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter.SseEvent
 @Component
 class OrderStream {
 
-    private final List<SseEmitter> subscribers = new CopyOnWriteArrayList<>();
+    // A browser this far behind has stopped reading. It is dropped instead of piling up messages.
+    static final int MAX_PENDING = 100;
 
-    // One thread writes to every browser. It keeps the updates in order and, more important,
-    // a slow connection never holds the Kafka consumer or the request that changed the order.
-    private final ExecutorService sender = Executors.newSingleThreadExecutor(
-            Thread.ofPlatform().name("order-stream").daemon().factory());
+    private final List<Subscriber> subscribers = new CopyOnWriteArrayList<>();
+    private final ThreadFactory writers = Thread.ofPlatform().name("order-stream-", 1).daemon().factory();
 
     SseEmitter subscribe() {
-        SseEmitter emitter = new SseEmitter(0L);
-        emitter.onCompletion(() -> subscribers.remove(emitter));
-        emitter.onError(error -> subscribers.remove(emitter));
-        subscribers.add(emitter);
+        return subscribe(new SseEmitter(0L));
+    }
+
+    SseEmitter subscribe(SseEmitter emitter) {
+        Subscriber subscriber = new Subscriber(emitter);
+        emitter.onCompletion(subscriber::stop);
+        emitter.onError(error -> subscriber.stop());
+        subscribers.add(subscriber);
+        subscriber.writer.start();
         return emitter;
     }
 
@@ -48,28 +52,51 @@ class OrderStream {
     }
 
     private void broadcast(Supplier<SseEventBuilder> message) {
-        sender.execute(() -> {
-            for (SseEmitter subscriber : subscribers) {
-                try {
-                    subscriber.send(message.get());
-                } catch (IOException | IllegalStateException e) {
-                    // The browser went away. Nothing to complete: the container reports the broken connection.
-                    subscribers.remove(subscriber);
-                }
-            }
-        });
+        subscribers.forEach(subscriber -> subscriber.offer(message));
     }
 
-    // On ContextClosedEvent and not on @PreDestroy alone: the web server waits for open requests
-    // before the beans are destroyed, and these streams would hold the shutdown until it times out.
+    // On ContextClosedEvent and not on @PreDestroy: the web server waits for open requests before
+    // the beans are destroyed, and these streams would hold the shutdown until it times out.
     @EventListener(ContextClosedEvent.class)
     void closeStreams() {
-        subscribers.forEach(SseEmitter::complete);
-        subscribers.clear();
+        subscribers.forEach(Subscriber::stop);
     }
 
-    @PreDestroy
-    void stopSender() {
-        sender.shutdownNow();
+    // Each browser has its own queue and its own thread writing to it. A connection that stops reading
+    // blocks only its own writes: never the others, the Kafka consumer or the request that changed the order.
+    private final class Subscriber {
+
+        private final SseEmitter emitter;
+        private final BlockingQueue<Supplier<SseEventBuilder>> pending = new ArrayBlockingQueue<>(MAX_PENDING);
+        private final Thread writer;
+
+        Subscriber(SseEmitter emitter) {
+            this.emitter = emitter;
+            this.writer = writers.newThread(this::write);
+        }
+
+        void offer(Supplier<SseEventBuilder> message) {
+            if (!pending.offer(message)) {
+                stop();
+            }
+        }
+
+        void stop() {
+            subscribers.remove(this);
+            writer.interrupt();
+        }
+
+        private void write() {
+            try {
+                while (true) {
+                    emitter.send(pending.take().get());
+                }
+            } catch (InterruptedException e) {
+                emitter.complete();
+            } catch (IOException | IllegalStateException e) {
+                // The browser went away. Nothing to complete: the container reports the broken connection.
+                subscribers.remove(this);
+            }
+        }
     }
 }
