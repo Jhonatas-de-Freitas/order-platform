@@ -5,6 +5,8 @@
 
 Três serviços em Java que processam um pedido trocando eventos pelo Kafka: o `order-service` recebe o pedido, o `inventory-service` reserva o estoque e o `payment-service` cobra (de mentira). Cada um tem o seu banco PostgreSQL e nenhum chama o outro por HTTP. Não existe um serviço chefe: cada um reage ao evento do outro.
 
+Este repositório faz parte de um sistema de pedidos com 5 repositórios. Os outros são o [api-gateway](https://github.com/Jhonatas-de-Freitas/api-gateway), o [notification-service](https://github.com/Jhonatas-de-Freitas/notification-service), o [order-dashboard](https://github.com/Jhonatas-de-Freitas/order-dashboard) e o [order-analytics](https://github.com/Jhonatas-de-Freitas/order-analytics).
+
 O que eu quis mostrar são os caminhos de falha: falta de estoque, pagamento recusado, serviço fora do ar, o mesmo evento chegando duas vezes ou fora de ordem, e uma mensagem que ninguém consegue ler.
 
 Java 21, Spring Boot 4.1, Spring Kafka, Spring Data JPA, Flyway, PostgreSQL 17 e Kafka 4.2 (KRaft). Testes com JUnit, Testcontainers e Awaitility. Métricas com Micrometer, Prometheus e Grafana.
@@ -52,9 +54,7 @@ Precisa de Docker.
 docker compose up -d --build --wait
 ```
 
-O Swagger de cada serviço fica em http://localhost:8081/swagger-ui.html, `8082` e `8083`. Prometheus em http://localhost:9090 e Grafana em http://localhost:3000 (abre direto no painel, sem login).
-
-O painel do Grafana mostra pedidos por estado, tempo do pedido até o estado final, reservas, pagamentos, mensagens na fila de erros e eventos pendentes no outbox. Os contadores começam do zero quando o serviço reinicia, e `docker compose down` apaga tudo, bancos inclusive.
+O Swagger de cada serviço fica em http://localhost:8081/swagger-ui.html, `8082` e `8083`. Prometheus em http://localhost:9090 e Grafana em http://localhost:3000 (abre direto no painel, sem login). O painel mostra pedidos por estado, tempo do pedido até o estado final, reservas, pagamentos, mensagens na fila de erros e eventos pendentes no outbox. Os contadores começam do zero quando o serviço reinicia, e `docker compose down` apaga tudo, bancos inclusive.
 
 Testes de unidade e de integração (os de integração sobem PostgreSQL e Kafka com Testcontainers, então também precisam de Docker):
 
@@ -76,7 +76,7 @@ curl -i -X POST localhost:8081/orders -H 'Content-Type: application/json' -d '{
 
 Responde `HTTP/1.1 202` com `Location: /orders/180708fa-e599-4655-a2a3-726f464a5c60` e o pedido completo em `PENDING`, ainda sem nomes e preços (`"totalAmount":null`).
 
-Dois segundos depois o pedido está confirmado, pago, e o saldo do teclado caiu de 50 para 48:
+Logo depois o pedido está confirmado, pago, e o saldo do teclado caiu de 50 para 48:
 
 ```bash
 ORDER=180708fa-e599-4655-a2a3-726f464a5c60
@@ -115,6 +115,8 @@ curl -s localhost:8083/payments/$ORDER
 {"status":"CANCELLED","cancellationReason":"OUT_OF_STOCK","cancellationDetail":"44444444-4444-4444-4444-444444444444: pedido 1, disponível 0"}
 {"type":"about:blank","title":"Not Found","status":404,"detail":"Payment for order 7af69585-89c4-4f60-9f04-3dff3c7bf675 not found","instance":"/payments/7af69585-89c4-4f60-9f04-3dff3c7bf675"}
 ```
+
+O `cancellationDetail` (o `detail` do `OrderCancelled`) é um texto para pessoas lerem. Ele cita o `productId` e não o nome, porque o produto nunca foi reservado e o `order-service` não sabe como ele se chama.
 
 Pagamento recusado, um Notebook (7499.00, acima do limite de 5000.00): o estoque chegou a reservar, o pagamento foi recusado, o pedido cancelou e a reserva foi devolvida.
 
@@ -196,3 +198,7 @@ Todos esses cenários, com as conferências, estão em `./scripts/smoke-test.sh`
 - Limpar as linhas antigas de `outbox` e `processed_events`, que hoje só crescem.
 - Tracing com OpenTelemetry, levando o trace no header da mensagem, para seguir um pedido pelos três serviços.
 - Readiness olhando o Kafka (hoje só o banco) e esquema dos eventos versionado, com teste de contrato entre os serviços.
+
+## Licença
+
+MIT. Veja o arquivo [LICENSE](LICENSE).
