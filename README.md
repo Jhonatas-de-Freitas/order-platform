@@ -38,17 +38,7 @@ sequenceDiagram
     end
 ```
 
-Toda seta entre serviços passa pelo Kafka. Os eventos têm o mesmo envelope (`eventId`, `type`, `orderId`, `occurredAt`, `payload`) e a chave da mensagem é o `orderId`, então os eventos de um pedido ficam na mesma partição de cada tópico.
-
-| Evento | Tópico | Quem reage |
-|---|---|---|
-| `OrderCreated` | `orders.events` | inventory reserva tudo ou nada |
-| `StockReserved` | `inventory.events` | payment cobra o total; order guarda nomes, preços e total |
-| `StockRejected` | `inventory.events` | order cancela com `OUT_OF_STOCK` |
-| `PaymentApproved` | `payments.events` | order confirma |
-| `PaymentRefused` | `payments.events` | order cancela com `PAYMENT_REFUSED` |
-| `OrderCancelled` | `orders.events` | inventory devolve o saldo, se tinha reservado |
-| `OrderConfirmed`, `StockReleased` | | ninguém aqui (servem para notificação e métricas) |
+Toda seta entre serviços passa pelo Kafka. Os eventos têm o mesmo envelope (`eventId`, `type`, `orderId`, `occurredAt`, `payload`) e a chave da mensagem é o `orderId`, então os eventos de um pedido ficam na mesma partição de cada tópico. Os tópicos são `orders.events`, `inventory.events` e `payments.events`. `OrderConfirmed` e `StockReleased` ninguém aqui ouve: servem para notificação e métricas.
 
 Estados do pedido: `PENDING` → `STOCK_RESERVED` → `CONFIRMED`, ou `CANCELLED`. `CONFIRMED` e `CANCELLED` são finais: o que chegar depois é ignorado.
 
@@ -62,23 +52,15 @@ Precisa de Docker.
 docker compose up -d --build --wait
 ```
 
-| O quê | Onde |
-|---|---|
-| order-service | http://localhost:8081/swagger-ui.html |
-| inventory-service | http://localhost:8082/swagger-ui.html |
-| payment-service | http://localhost:8083/swagger-ui.html |
-| Prometheus | http://localhost:9090 |
-| Grafana | http://localhost:3000 (abre direto no painel, sem login) |
+O Swagger de cada serviço fica em http://localhost:8081/swagger-ui.html, `8082` e `8083`. Prometheus em http://localhost:9090 e Grafana em http://localhost:3000 (abre direto no painel, sem login).
 
-O painel do Grafana mostra pedidos por estado, tempo do pedido até o estado final, reservas, pagamentos, mensagens na fila de erros e eventos pendentes no outbox. Os contadores começam do zero quando o serviço reinicia.
+O painel do Grafana mostra pedidos por estado, tempo do pedido até o estado final, reservas, pagamentos, mensagens na fila de erros e eventos pendentes no outbox. Os contadores começam do zero quando o serviço reinicia, e `docker compose down` apaga tudo, bancos inclusive.
 
 Testes de unidade e de integração (os de integração sobem PostgreSQL e Kafka com Testcontainers, então também precisam de Docker):
 
 ```bash
 ./mvnw verify
 ```
-
-`docker compose down` apaga tudo, bancos inclusive.
 
 ## Como testar os cenários
 
@@ -91,13 +73,8 @@ curl -i -X POST localhost:8081/orders -H 'Content-Type: application/json' -d '{
   "customerId":"c-1001","customerName":"Ana Souza","customerEmail":"ana@exemplo.com",
   "items":[{"productId":"11111111-1111-1111-1111-111111111111","quantity":2}]}'
 ```
-```
-HTTP/1.1 202
-Location: /orders/180708fa-e599-4655-a2a3-726f464a5c60
-Content-Type: application/json
 
-{"id":"180708fa-e599-4655-a2a3-726f464a5c60","customerId":"c-1001","customerName":"Ana Souza","customerEmail":"ana@exemplo.com","status":"PENDING","totalAmount":null,"cancellationReason":null,"cancellationDetail":null,"items":[{"productId":"11111111-1111-1111-1111-111111111111","productName":null,"quantity":2,"unitPrice":null}],"history":[{"status":"PENDING","occurredAt":"2026-10-10T20:39:46.058Z","detail":"Pedido recebido"}],"createdAt":"2026-10-10T20:39:46.058Z","updatedAt":"2026-10-10T20:39:46.058Z"}
-```
+Responde `HTTP/1.1 202` com `Location: /orders/180708fa-e599-4655-a2a3-726f464a5c60` e o pedido completo em `PENDING`, ainda sem nomes e preços (`"totalAmount":null`).
 
 Dois segundos depois o pedido está confirmado, pago, e o saldo do teclado caiu de 50 para 48:
 
@@ -161,12 +138,10 @@ Tudo ou nada, um Mouse e um Headset no mesmo pedido: o Headset não tem saldo, e
 ORDER=$(order '{"productId":"22222222-2222-2222-2222-222222222222","quantity":1},
   {"productId":"44444444-4444-4444-4444-444444444444","quantity":1}')
 curl -s localhost:8081/orders/$ORDER | jq -c '{status, cancellationReason}'
-curl -s localhost:8082/reservations/$ORDER
 curl -s localhost:8082/products/22222222-2222-2222-2222-222222222222 | jq -c '{name, availableQuantity}'
 ```
 ```
 {"status":"CANCELLED","cancellationReason":"OUT_OF_STOCK"}
-{"type":"about:blank","title":"Not Found","status":404,"detail":"Reservation for order 5de01d6e-4c6e-45cf-ae9b-231f29fb6ca1 not found","instance":"/reservations/5de01d6e-4c6e-45cf-ae9b-231f29fb6ca1"}
 {"name":"Mouse Sem Fio","availableQuantity":80}
 ```
 
@@ -183,22 +158,17 @@ Content-Type: application/problem+json
 {"type":"about:blank","title":"Bad Request","status":400,"detail":"The request has invalid fields","instance":"/orders","errors":[{"field":"customerId","message":"must not be blank"},{"field":"customerEmail","message":"must be a well-formed email address"},{"field":"items[0].quantity","message":"must be greater than or equal to 1"}]}
 ```
 
-Serviço fora do ar: com `docker compose stop payment-service`, um pedido de Mouse para em `STOCK_RESERVED` (o `StockReserved` fica esperando no tópico). Depois de `docker compose start payment-service` ele chega a `CONFIRMED`; no CI foram 22 segundos entre o `start` e a confirmação.
+Último item: o smoke test cria um produto com saldo 1 (`POST /products`) e manda dois pedidos dele ao mesmo tempo. Um chega a `CONFIRMED`, o outro a `CANCELLED` com `OUT_OF_STOCK`, e o saldo termina em 0.
 
-Mensagem inválida: `./scripts/dead-letter-demo.sh` publica um texto que não é JSON em `orders.events`, mostra onde ele foi parar e confere que o pedido seguinte passa. Saída no CI:
+Serviço fora do ar: com `docker compose stop payment-service`, um pedido de Mouse para em `STOCK_RESERVED` (o `StockReserved` fica esperando no tópico). Depois de `docker compose start payment-service` ele chega a `CONFIRMED` assim que o serviço sobe e lê o tópico.
+
+Mensagem inválida: `./scripts/dead-letter-demo.sh` publica um texto que não é JSON em `orders.events`, mostra onde ele foi parar e confere que o pedido seguinte passa. Trecho da saída no CI:
 
 ```
-== Publishing to orders.events, key demo-1791665544: "isto nao e um evento"
 == Waiting for it in inventory-service.dlt
-  partition 0, offset 0
-  key and value, as they were published:
     demo-1791665544 | isto nao e um evento
-  why it is there (headers added by the service):
-    kafka_dlt-exception-cause-fqcn:io.github.jhonatasdefreitas.inventory.messaging.InvalidEventException
-    kafka_dlt-exception-message:Not a valid event: Unrecognized token 'isto': was expecting (JSON String, Number, Array, Object or token 'null', 'true' or 'false')
+    kafka_dlt-exception-message:Not a valid event: Unrecognized token 'isto': was expecting (JSON String, ...)
     kafka_dlt-original-topic:orders.events
-== Counter of the inventory-service
-  dead_letter_messages_total 1.0
 == The next order still goes through
   order 5903850d-d656-459e-98f2-3b733eca7a9f is CONFIRMED
 ```
